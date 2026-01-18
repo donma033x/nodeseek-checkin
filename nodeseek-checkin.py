@@ -31,7 +31,7 @@ YESCAPTCHA_KEY = os.environ.get('YESCAPTCHA_KEY', '')
 TG_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-COOKIE_FILE = Path(__file__).parent / "cookies.json"
+COOKIE_FILE = Path(__file__).resolve().parent / "cookies.json"
 TURNSTILE_SITEKEY = "0x4AAAAAAAaNy7leGjewpVyR"
 SIGNIN_URL = "https://www.nodeseek.com/signIn.html"
 
