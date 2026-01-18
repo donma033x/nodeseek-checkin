@@ -163,9 +163,17 @@ def get_deepflood_cookie(nodeseek_cookie):
             timeout=30
         )
         
+        if resp.status_code == 403:
+            Logger.log("DeepFlood", "cAuth 被 Cloudflare 拦截 (403)", "WARN")
+            return None
+        
         auth_data = resp.json()
         if not auth_data.get('success'):
-            Logger.log("DeepFlood", f"cAuth 失败: {auth_data}", "WARN")
+            msg = auth_data.get('message', str(auth_data))
+            if '10次' in msg:
+                Logger.log("DeepFlood", "NodeSeek Connect 次数已用完，请明天再试或手动设置 DEEPFLOOD_COOKIE", "WARN")
+            else:
+                Logger.log("DeepFlood", f"cAuth 失败: {msg}", "WARN")
             return None
         
         # 2. 发送到 DeepFlood 完成登录
