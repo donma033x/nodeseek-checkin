@@ -6,9 +6,9 @@ cron: 0 9 * * *
 new Env('nodeseek-checkin')
 
 环境变量:
-    NS_COOKIE: Cookie（多账号用 & 分隔）
-    NS_ACCOUNTS: 账号密码 email:password（多账号用 & 分隔）
-    NS_RANDOM: 是否随机签到 true/false（默认 true）
+    NODESEEK_COOKIE: Cookie（多账号用 & 分隔）
+    NODESEEK_ACCOUNT: 账号密码 email:password（多账号用 & 分隔）
+    NODESEEK_RANDOM: 是否随机签到 true/false（默认 true）
     YESCAPTCHA_KEY: YesCaptcha API Key（用于解决 Turnstile）
     TELEGRAM_BOT_TOKEN: Telegram 通知（可选）
     TELEGRAM_CHAT_ID: Telegram 聊天ID（可选）
@@ -24,9 +24,9 @@ from pathlib import Path
 from datetime import datetime
 
 # ==================== 配置 ====================
-NS_COOKIE = os.environ.get('NS_COOKIE', '')
-NS_ACCOUNTS = os.environ.get('NS_ACCOUNTS', '')
-NS_RANDOM = os.environ.get('NS_RANDOM', 'true').lower() == 'true'
+NODESEEK_COOKIE = os.environ.get('NODESEEK_COOKIE', '')
+NODESEEK_ACCOUNT = os.environ.get('NODESEEK_ACCOUNT', '')
+NODESEEK_RANDOM = os.environ.get('NODESEEK_RANDOM', 'true').lower() == 'true'
 YESCAPTCHA_KEY = os.environ.get('YESCAPTCHA_KEY', '') or os.environ.get('YESCAPTCHA_API_KEY', '')
 TG_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
@@ -201,7 +201,7 @@ async def process_account(identifier, cookie=None, username=None, password=None)
     # 先尝试用 cookie 签到
     if cookie:
         Logger.log("账号", f"[{identifier}] 签到中...", "WAIT")
-        status, msg = do_checkin(cookie, NS_RANDOM)
+        status, msg = do_checkin(cookie, NODESEEK_RANDOM)
         
         if status in ["success", "already"]:
             result["status"] = status
@@ -227,7 +227,7 @@ async def process_account(identifier, cookie=None, username=None, password=None)
         if new_cookie:
             Logger.log("账号", f"[{identifier}] 登录成功", "OK")
             
-            status, msg = do_checkin(new_cookie, NS_RANDOM)
+            status, msg = do_checkin(new_cookie, NODESEEK_RANDOM)
             result["status"] = status
             result["msg"] = msg
             
@@ -261,16 +261,16 @@ async def main():
     
     # 解析环境变量中的 Cookie
     cookies_from_env = {}
-    if NS_COOKIE:
-        for i, cookie in enumerate(NS_COOKIE.split('&')):
+    if NODESEEK_COOKIE:
+        for i, cookie in enumerate(NODESEEK_COOKIE.split('&')):
             cookie = cookie.strip()
             if cookie:
                 cookies_from_env[f"账号{i+1}"] = cookie
     
     # 解析账号密码
     accounts_config = {}
-    if NS_ACCOUNTS:
-        for acc in NS_ACCOUNTS.split('&'):
+    if NODESEEK_ACCOUNT:
+        for acc in NODESEEK_ACCOUNT.split('&'):
             acc = acc.strip()
             if ':' in acc:
                 username, password = acc.split(':', 1)
@@ -287,7 +287,7 @@ async def main():
             accounts_config[key] = {"username": None, "password": None, "cookie": cookie}
     
     if not accounts_config:
-        Logger.log("NodeSeek", "未配置任何账号，请设置 NS_COOKIE 或 NS_ACCOUNTS", "ERR")
+        Logger.log("NodeSeek", "未配置任何账号，请设置 NODESEEK_COOKIE 或 NODESEEK_ACCOUNT", "ERR")
         return
     
     Logger.log("NodeSeek", f"共 {len(accounts_config)} 个账号", "INFO")
@@ -309,7 +309,7 @@ async def main():
     # 如果有新 Cookie，更新环境变量
     if new_cookies:
         new_cookie_str = '&'.join(new_cookies)
-        update_ql_env("NS_COOKIE", new_cookie_str, "NodeSeek Cookie (自动更新)")
+        update_ql_env("NODESEEK_COOKIE", new_cookie_str, "NodeSeek Cookie (自动更新)")
     
     success = sum(1 for r in results if r["status"] in ["success", "already"])
     
