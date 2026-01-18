@@ -43,60 +43,37 @@ class Logger:
         print(f"[{ts}] [{tag}] {icons.get(icon, icon)} {msg}")
 
 # ==================== 青龙 API ====================
-def get_ql_token():
-    """获取青龙 Token"""
-    token_file = Path("/ql/data/config/token.json")
-    if token_file.exists():
-        try:
-            with open(token_file) as f:
-                return json.load(f).get("value")
-        except:
-            pass
-    return None
 
 def update_ql_env(name, value, remarks=""):
-    """更新青龙环境变量"""
-    token = get_ql_token()
-    if not token:
-        Logger.log("青龙", "无法获取 Token，跳过环境变量更新", "WARN")
+    """更新青龙环境变量（通过修改 config.sh）"""
+    config_file = Path("/ql/data/config/config.sh")
+    if not config_file.exists():
+        Logger.log("青龙", "config.sh 不存在，跳过更新", "WARN")
         return False
     
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    base_url = "http://localhost:5700"
-    
     try:
-        # 先查询是否存在
-        resp = http_requests.get(f"{base_url}/api/envs", headers=headers, params={"searchValue": name}, timeout=10)
-        envs = resp.json().get("data", [])
+        with open(config_file, 'r') as f:
+            content = f.read()
         
-        existing = None
-        for env in envs:
-            if env.get("name") == name:
-                existing = env
-                break
+        # 转义特殊字符
+        escaped_value = value.replace('"', '\\"')
+        new_line = f'export {name}="{escaped_value}"'
         
-        if existing:
-            # 更新
-            resp = http_requests.put(f"{base_url}/api/envs", headers=headers, json={
-                "id": existing["id"],
-                "name": name,
-                "value": value,
-                "remarks": remarks or existing.get("remarks", "")
-            }, timeout=10)
+        # 检查是否已存在
+        import re
+        pattern = rf'^export {name}=.*$'
+        if re.search(pattern, content, re.MULTILINE):
+            # 替换
+            content = re.sub(pattern, new_line, content, flags=re.MULTILINE)
         else:
-            # 创建
-            resp = http_requests.post(f"{base_url}/api/envs", headers=headers, json=[{
-                "name": name,
-                "value": value,
-                "remarks": remarks or "NodeSeek Cookie"
-            }], timeout=10)
+            # 追加
+            content += f"\n{new_line}\n"
         
-        if resp.json().get("code") == 200:
-            Logger.log("青龙", f"环境变量 {name} 已更新", "OK")
-            return True
-        else:
-            Logger.log("青龙", f"更新失败: {resp.text}", "WARN")
-            return False
+        with open(config_file, 'w') as f:
+            f.write(content)
+        
+        Logger.log("青龙", f"环境变量 {name} 已更新到 config.sh", "OK")
+        return True
     except Exception as e:
         Logger.log("青龙", f"更新异常: {e}", "WARN")
         return False
