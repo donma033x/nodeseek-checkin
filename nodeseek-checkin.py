@@ -27,11 +27,10 @@ from datetime import datetime
 NS_COOKIE = os.environ.get('NS_COOKIE', '')
 NS_ACCOUNTS = os.environ.get('NS_ACCOUNTS', '')
 NS_RANDOM = os.environ.get('NS_RANDOM', 'true').lower() == 'true'
-YESCAPTCHA_KEY = os.environ.get('YESCAPTCHA_KEY', '')
+YESCAPTCHA_KEY = os.environ.get('YESCAPTCHA_KEY', '') or os.environ.get('YESCAPTCHA_API_KEY', '')
 TG_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
-COOKIE_FILE = Path(__file__).resolve().parent / "cookies.json"
 TURNSTILE_SITEKEY = "0x4AAAAAAAaNy7leGjewpVyR"
 SIGNIN_URL = "https://www.nodeseek.com/signIn.html"
 
@@ -43,20 +42,64 @@ class Logger:
         ts = datetime.now().strftime('%H:%M:%S')
         print(f"[{ts}] [{tag}] {icons.get(icon, icon)} {msg}")
 
-# ==================== Cookie 管理 ====================
-def load_cookies():
-    if COOKIE_FILE.exists():
+# ==================== 青龙 API ====================
+def get_ql_token():
+    """获取青龙 Token"""
+    token_file = Path("/ql/data/config/token.json")
+    if token_file.exists():
         try:
-            with open(COOKIE_FILE) as f:
-                return json.load(f)
+            with open(token_file) as f:
+                return json.load(f).get("value")
         except:
             pass
-    return {}
+    return None
 
-def save_cookies(cookies_dict):
-    with open(COOKIE_FILE, 'w') as f:
-        json.dump(cookies_dict, f, indent=2)
-    Logger.log("Cookie", f"已保存 {len(cookies_dict)} 个账号", "OK")
+def update_ql_env(name, value, remarks=""):
+    """更新青龙环境变量"""
+    token = get_ql_token()
+    if not token:
+        Logger.log("青龙", "无法获取 Token，跳过环境变量更新", "WARN")
+        return False
+    
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    base_url = "http://localhost:5700"
+    
+    try:
+        # 先查询是否存在
+        resp = http_requests.get(f"{base_url}/api/envs", headers=headers, params={"searchValue": name}, timeout=10)
+        envs = resp.json().get("data", [])
+        
+        existing = None
+        for env in envs:
+            if env.get("name") == name:
+                existing = env
+                break
+        
+        if existing:
+            # 更新
+            resp = http_requests.put(f"{base_url}/api/envs", headers=headers, json={
+                "id": existing["id"],
+                "name": name,
+                "value": value,
+                "remarks": remarks or existing.get("remarks", "")
+            }, timeout=10)
+        else:
+            # 创建
+            resp = http_requests.post(f"{base_url}/api/envs", headers=headers, json=[{
+                "name": name,
+                "value": value,
+                "remarks": remarks or "NodeSeek Cookie"
+            }], timeout=10)
+        
+        if resp.json().get("code") == 200:
+            Logger.log("青龙", f"环境变量 {name} 已更新", "OK")
+            return True
+        else:
+            Logger.log("青龙", f"更新失败: {resp.text}", "WARN")
+            return False
+    except Exception as e:
+        Logger.log("青龙", f"更新异常: {e}", "WARN")
+        return False
 
 # ==================== YesCaptcha Turnstile 解决 ====================
 def solve_turnstile_yescaptcha():
@@ -66,7 +109,6 @@ def solve_turnstile_yescaptcha():
     
     Logger.log("Turnstile", "使用 YesCaptcha...", "WAIT")
     try:
-        # 创建任务
         r = http_requests.post("https://api.yescaptcha.com/createTask", json={
             "clientKey": YESCAPTCHA_KEY,
             "task": {
@@ -81,7 +123,6 @@ def solve_turnstile_yescaptcha():
             return None
         task_id = data.get('taskId')
         
-        # 轮询结果
         for i in range(40):
             time.sleep(3)
             r = http_requests.post("https://api.yescaptcha.com/getTaskResult", json={
@@ -149,11 +190,8 @@ def login_with_api(username, password, turnstile_token):
         from curl_cffi import requests
     
     session = requests.Session(impersonate='safari15_5')
-    
-    # 先访问登录页获取初始 cookie
     session.get(SIGNIN_URL)
     
-    # 登录
     data = {
         "username": username,
         "password": password,
@@ -181,6 +219,7 @@ def login_with_api(username, password, turnstile_token):
 # ==================== 主流程 ====================
 async def process_account(identifier, cookie=None, username=None, password=None):
     result = {"id": identifier, "status": "", "msg": ""}
+    new_cookie = None
     
     # 先尝试用 cookie 签到
     if cookie:
@@ -201,19 +240,16 @@ async def process_account(identifier, cookie=None, username=None, password=None)
     if username and password:
         Logger.log("账号", f"[{identifier}] Cookie 无效，登录...", "WARN")
         
-        # 解决 Turnstile
         token = solve_turnstile_yescaptcha()
         if not token:
             result["status"] = "turnstile_failed"
             result["msg"] = "Turnstile 验证失败，请配置 YESCAPTCHA_KEY"
             return result, None
         
-        # 登录
         new_cookie = login_with_api(username, password, token)
         if new_cookie:
             Logger.log("账号", f"[{identifier}] 登录成功", "OK")
             
-            # 签到
             status, msg = do_checkin(new_cookie, NS_RANDOM)
             result["status"] = status
             result["msg"] = msg
@@ -246,39 +282,43 @@ def send_telegram(msg):
 async def main():
     Logger.log("NodeSeek", "签到开始", "INFO")
     
-    cookies_env = [c.strip() for c in NS_COOKIE.split('&') if c.strip()]
-    accounts_env = [a.strip() for a in NS_ACCOUNTS.split('&') if a.strip()]
-    saved_cookies = load_cookies()
+    # 解析环境变量中的 Cookie
+    cookies_from_env = {}
+    if NS_COOKIE:
+        for i, cookie in enumerate(NS_COOKIE.split('&')):
+            cookie = cookie.strip()
+            if cookie:
+                cookies_from_env[f"账号{i+1}"] = cookie
     
-    accounts = {}
+    # 解析账号密码
+    accounts_config = {}
+    if NS_ACCOUNTS:
+        for acc in NS_ACCOUNTS.split('&'):
+            acc = acc.strip()
+            if ':' in acc:
+                username, password = acc.split(':', 1)
+                username = username.strip()
+                accounts_config[username] = {
+                    "username": username,
+                    "password": password.strip(),
+                    "cookie": cookies_from_env.get(username)  # 可能有对应的 cookie
+                }
     
-    for i, cookie in enumerate(cookies_env):
-        key = f"env_{i+1}"
-        accounts[key] = {"cookie": cookie, "username": None, "password": None}
+    # 如果只有 Cookie 没有账号密码
+    if cookies_from_env and not accounts_config:
+        for key, cookie in cookies_from_env.items():
+            accounts_config[key] = {"username": None, "password": None, "cookie": cookie}
     
-    for acc in accounts_env:
-        if ':' in acc:
-            username, password = acc.split(':', 1)
-            accounts[username] = {
-                "cookie": saved_cookies.get(username),
-                "username": username,
-                "password": password
-            }
-    
-    for key, cookie in saved_cookies.items():
-        if key not in accounts:
-            accounts[key] = {"cookie": cookie, "username": None, "password": None}
-    
-    if not accounts:
-        Logger.log("NodeSeek", "未配置任何账号", "ERR")
+    if not accounts_config:
+        Logger.log("NodeSeek", "未配置任何账号，请设置 NS_COOKIE 或 NS_ACCOUNTS", "ERR")
         return
     
-    Logger.log("NodeSeek", f"共 {len(accounts)} 个账号", "INFO")
+    Logger.log("NodeSeek", f"共 {len(accounts_config)} 个账号", "INFO")
     
     results = []
-    new_cookies = {}
+    new_cookies = []
     
-    for identifier, info in accounts.items():
+    for identifier, info in accounts_config.items():
         result, cookie = await process_account(
             identifier,
             info.get("cookie"),
@@ -287,10 +327,12 @@ async def main():
         )
         results.append(result)
         if cookie:
-            new_cookies[identifier] = cookie
+            new_cookies.append(cookie)
     
+    # 如果有新 Cookie，更新环境变量
     if new_cookies:
-        save_cookies(new_cookies)
+        new_cookie_str = '&'.join(new_cookies)
+        update_ql_env("NS_COOKIE", new_cookie_str, "NodeSeek Cookie (自动更新)")
     
     success = sum(1 for r in results if r["status"] in ["success", "already"])
     
