@@ -8,13 +8,15 @@ new Env('nodeseek-checkin')
 环境变量:
     NODESEEK_COOKIE: NodeSeek Cookie
     NODESEEK_ACCOUNT: NodeSeek 账号密码 (user:pass)
+    DEEPFLOOD_COOKIE: DeepFlood Cookie（可选，不设置则自动通过 OAuth 获取）
     NODESEEK_RANDOM: 是否随机签到 true/false（默认 true）
     YESCAPTCHA_API_KEY: YesCaptcha API Key（用于解决 Turnstile）
     TELEGRAM_BOT_TOKEN: Telegram 通知（可选）
     TELEGRAM_CHAT_ID: Telegram 聊天ID（可选）
 
 说明:
-    DeepFlood 使用 NodeSeek 的 Cookie 登录，无需单独配置
+    DeepFlood Cookie 有效期 30 天，建议设置 DEEPFLOOD_COOKIE 避免每次 OAuth
+    Cookie 失效时会自动通过 NodeSeek OAuth 重新获取
 """
 
 import os
@@ -30,6 +32,7 @@ from datetime import datetime
 # ==================== 配置 ====================
 NODESEEK_COOKIE = os.environ.get('NODESEEK_COOKIE', '')
 NODESEEK_ACCOUNT = os.environ.get('NODESEEK_ACCOUNT', '')
+DEEPFLOOD_COOKIE = os.environ.get('DEEPFLOOD_COOKIE', '')
 NODESEEK_RANDOM = os.environ.get('NODESEEK_RANDOM', 'true').lower() == 'true'
 YESCAPTCHA_KEY = os.environ.get('YESCAPTCHA_KEY', '') or os.environ.get('YESCAPTCHA_API_KEY', '')
 TG_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
@@ -333,17 +336,28 @@ async def process_account(identifier, cookie=None, username=None, password=None)
     else:
         Logger.log("NodeSeek", f"[{identifier}] {status}: {msg}", "WARN")
     
-    # DeepFlood 签到 - 使用 OAuth 获取独立 Cookie
+    # DeepFlood 签到
     Logger.log("DeepFlood", f"[{identifier}] 签到中...", "WAIT")
     
-    # 先尝试使用 NodeSeek Cookie 直接签到
-    status, msg = do_checkin(ns_cookie, "DeepFlood", NODESEEK_RANDOM)
+    df_cookie = DEEPFLOOD_COOKIE
+    new_df_cookie = None
     
+    # 如果有 DEEPFLOOD_COOKIE，先尝试使用
+    if df_cookie:
+        status, msg = do_checkin(df_cookie, "DeepFlood", NODESEEK_RANDOM)
+    else:
+        # 没有 DEEPFLOOD_COOKIE，先尝试 NodeSeek Cookie
+        status, msg = do_checkin(ns_cookie, "DeepFlood", NODESEEK_RANDOM)
+    
+    # Cookie 无效时，通过 OAuth 获取新的 DeepFlood Cookie
     if status == "invalid" or (status == "fail" and "403" in str(msg)):
-        # Cookie 无效，通过 OAuth 获取 DeepFlood Cookie
-        df_cookie = get_deepflood_cookie(ns_cookie)
-        if df_cookie:
-            status, msg = do_checkin(df_cookie, "DeepFlood", NODESEEK_RANDOM)
+        Logger.log("DeepFlood", "Cookie 无效，通过 OAuth 重新获取...", "WAIT")
+        new_df_cookie = get_deepflood_cookie(ns_cookie)
+        if new_df_cookie:
+            status, msg = do_checkin(new_df_cookie, "DeepFlood", NODESEEK_RANDOM)
+            if status in ["success", "already"]:
+                # 更新环境变量
+                update_ql_env("DEEPFLOOD_COOKIE", new_df_cookie)
     
     results.append({"site": "DeepFlood", "status": status, "msg": msg})
     
