@@ -38,6 +38,9 @@ YESCAPTCHA_KEY = os.environ.get('YESCAPTCHA_KEY', '') or os.environ.get('YESCAPT
 TG_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TG_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
 
+# 本地 Cookie 缓存文件
+COOKIE_CACHE_FILE = Path(__file__).parent / 'cookies_cache.json'
+
 TURNSTILE_SITEKEY = "0x4AAAAAAAaNy7leGjewpVyR"
 NODESEEK_SIGNIN_URL = "https://www.nodeseek.com/signIn.html"
 
@@ -57,6 +60,28 @@ SITES = {
         "oauth_url": "https://www.deepflood.com/api/account/nodeseek-signIn",
     }
 }
+
+# ==================== Cookie 缓存 ====================
+def load_cached_cookies():
+    """读取缓存的 Cookie"""
+    if COOKIE_CACHE_FILE.exists():
+        try:
+            with open(COOKIE_CACHE_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_cached_cookies(cookies):
+    """保存 Cookie 到缓存"""
+    try:
+        existing = load_cached_cookies()
+        existing.update(cookies)
+        with open(COOKIE_CACHE_FILE, 'w') as f:
+            json.dump(existing, f, indent=2)
+        return True
+    except Exception as e:
+        return False
 
 # ==================== 日志 ====================
 class Logger:
@@ -304,6 +329,13 @@ async def process_account(identifier, cookie=None, username=None, password=None)
     ns_cookie = cookie
     df_cookie = None
     
+    # 尝试从本地缓存加载 NodeSeek Cookie
+    if not ns_cookie:
+        cached_cookies = load_cached_cookies()
+        ns_cookie = cached_cookies.get(f'nodeseek_cookie_{identifier}', '')
+        if ns_cookie:
+            Logger.log("账号", f"[{identifier}] 使用缓存的 Cookie", "INFO")
+    
     # 如果没有 cookie，先登录
     if not ns_cookie and username and password:
         Logger.log("账号", f"[{identifier}] 无 Cookie，登录...", "WAIT")
@@ -316,6 +348,8 @@ async def process_account(identifier, cookie=None, username=None, password=None)
             return [{"site": "NodeSeek", "status": "login_failed", "msg": "登录失败"}], None
         
         Logger.log("账号", f"[{identifier}] 登录成功", "OK")
+        # 保存新获取的 Cookie
+        save_cached_cookies({f'nodeseek_cookie_{identifier}': ns_cookie})
     
     if not ns_cookie:
         return [{"site": "All", "status": "no_credential", "msg": "无有效凭证"}], None
@@ -337,6 +371,8 @@ async def process_account(identifier, cookie=None, username=None, password=None)
                 ns_cookie = login_with_api(username, password, token)
                 if ns_cookie:
                     Logger.log("账号", f"[{identifier}] 登录成功", "OK")
+                    # 保存新 Cookie
+                    save_cached_cookies({f'nodeseek_cookie_{identifier}': ns_cookie})
                     status, msg = do_checkin(ns_cookie, "NodeSeek", NODESEEK_RANDOM)
                     results[-1] = {"site": "NodeSeek", "status": status, "msg": msg}
                     if status in ["success", "already"]:
@@ -347,25 +383,30 @@ async def process_account(identifier, cookie=None, username=None, password=None)
     # DeepFlood 签到
     Logger.log("DeepFlood", f"[{identifier}] 签到中...", "WAIT")
     
-    df_cookie = DEEPFLOOD_COOKIE
+    # 优先级: 环境变量 > 本地缓存 > OAuth 重新获取
+    cached_cookies = load_cached_cookies()
+    df_cookie = DEEPFLOOD_COOKIE or cached_cookies.get('deepflood_cookie', '')
     new_df_cookie = None
     
-    # 如果有 DEEPFLOOD_COOKIE，先尝试使用
+    # 如果有 DeepFlood Cookie，先尝试使用
     if df_cookie:
         status, msg = do_checkin(df_cookie, "DeepFlood", NODESEEK_RANDOM)
     else:
-        # 没有 DEEPFLOOD_COOKIE，先尝试 NodeSeek Cookie
-        status, msg = do_checkin(ns_cookie, "DeepFlood", NODESEEK_RANDOM)
+        # 没有 DeepFlood Cookie，直接通过 OAuth 获取
+        status = "invalid"
+        msg = "无 DeepFlood Cookie"
     
     # Cookie 无效时，通过 OAuth 获取新的 DeepFlood Cookie
-    if status == "invalid" or (status == "fail" and "403" in str(msg)):
+    if status == "invalid" or (status == "fail" and ("403" in str(msg) or "USER NOT FOUND" in str(msg))):
         Logger.log("DeepFlood", "Cookie 无效，通过 OAuth 重新获取...", "WAIT")
         new_df_cookie = get_deepflood_cookie(ns_cookie)
         if new_df_cookie:
             status, msg = do_checkin(new_df_cookie, "DeepFlood", NODESEEK_RANDOM)
             if status in ["success", "already"]:
-                # 更新环境变量
+                # 更新环境变量和本地缓存
                 update_ql_env("DEEPFLOOD_COOKIE", new_df_cookie)
+                save_cached_cookies({'deepflood_cookie': new_df_cookie})
+                Logger.log("DeepFlood", "Cookie 已保存到本地缓存", "OK")
     
     results.append({"site": "DeepFlood", "status": status, "msg": msg})
     
